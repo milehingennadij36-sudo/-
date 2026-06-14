@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = "8806979921:AAG4_e5_gJ3ZEgAiFbSuDax3DpZjRC8fY3U"  # Замени на токен от @BotFather
-bot = Bot(token=TOKEN)
+bot = Bot(token=8806979921:AAG4_e5_gJ3ZEgAiFbSuDax3DpZjRC8fY3U)
 dp = Dispatcher()
 
 # База данных (простая память, при перезапуске всё сотрётся)
