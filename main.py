@@ -24,7 +24,7 @@ REQUIRED_CHANNEL_ID = os.getenv("CHANNEL_ID", "-1001234567890")  # ID канал
 ADMIN_IDS = [int(id) for id in os.getenv("8564680065", "8564680065").split(",")]  # ID админов
 ADMIN_USERNAME = "@Rider_Mare"
 
-WEBHOOK_HOST = os.getenv("https://pokupka-proektov-1tzy.onrender.com", "https://pokupka-proektov-1tzy.onrender.com")
+WEBHOOK_HOST = os.getenv("https://pokupka-proektov-b6mz.onrender.com", "https://pokupka-proektov-b6mz.onrender.com")
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
