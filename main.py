@@ -10,7 +10,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.getenv("8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY", "ТВОЙ_ТОКЕН_СЮДА")
-BASE_URL = os.getenv("BASE_URL", "https://твой-сервис.onrender.com")  # URL твоего Render сервиса
+BASE_URL = os.getenv("BASE_URL", "https://pokupai-proekt-u-nas.onrender.com")  # URL твоего Render сервиса
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"
 
