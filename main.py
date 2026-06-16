@@ -1,254 +1,290 @@
-import asyncio
 import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+import logging
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+import aiosqlite
+from dotenv import load_dotenv
 
-# ========== НАСТРОЙКИ ==========
-TOKEN = "8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY"  # Замени на токен от @BotFather
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = None  # Будет установлено позже (https://твой-сайт.onrender.com/webhook)
-PORT = int(os.environ.get("PORT", 8080))
+load_dotenv()
 
-bot = Bot(token=TOKEN)
+# Настройки
+BOT_TOKEN = os.getenv('8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY')
+PORT = int(os.getenv('PORT', 8080))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+
+# Реквизиты
+PHONE = '+79800180927'
+BANK = 'Сбер банк'
+STARS_ID = 'Rider_Mare'
+WAIT_MSG = 'ожидайте 2 часа и с вами свяжутся'
+
+# Товары
+ITEMS = {
+    'mod_26': {'name': 'Мод Блек Раши-26 года', 'price': 250},
+    'launcher': {'name': 'Лаунчер Блек Раши', 'price': 150},
+    'ndk_26': {'name': 'НДК-26', 'price': 50},
+    'ndk_24': {'name': 'НДК-24', 'price': 60},
+    'ndk_16': {'name': 'НДК-16', 'price': 40},
+}
+
+PREMIUM = {
+    'understanding': {'name': 'Премка понимающий', 'price': 350},
+    'medium': {'name': 'Премка средний', 'price': 250},
+    'beginner': {'name': 'Премка начинающий', 'price': 150},
+}
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
-# База данных (простая память, при перезапуске всё сотрётся)
-user_stats = {}  # {user_id: {"purchases": 0, "premium": None}}
+# База данных
+DB_NAME = 'bot.db'
 
-# ========== FSM для состояний ==========
-class OrderState(StatesGroup):
-    waiting_for_payment = State()
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:        await db.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                purchases_count INTEGER DEFAULT 0,
+                premium_status TEXT DEFAULT 'none',
+                current_order TEXT DEFAULT 'Нет активных заказов',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.commit()
 
-# ========== КЛАВИАТУРЫ ==========
+async def get_or_create_user(user_id: int, username: str, first_name: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            'INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)',
+            (user_id, username, first_name)
+        )
+        await db.commit()
+        cursor = await db.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        return await cursor.fetchone()
+
+async def add_purchase(user_id: int, item_name: str, price: int, payment_method: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            'UPDATE users SET purchases_count = purchases_count + 1, current_order = ? WHERE user_id = ?',
+            (f'{item_name} ({payment_method})', user_id)
+        )
+        await db.commit()
+
+async def get_user_stats(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            'SELECT username, purchases_count, current_order, premium_status FROM users WHERE user_id = ?',
+            (user_id,)
+        )
+        return await cursor.fetchone()
+
+# Клавиатуры
 def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Покупка проектов", callback_data="menu_buy_projects")],
-        [InlineKeyboardButton(text="⚙️ Компиляция JNI", callback_data="menu_compilation")],
-        [InlineKeyboardButton(text="👤 Кабинет", callback_data="menu_cabinet")],
-        [InlineKeyboardButton(text="⭐ Премиум", callback_data="menu_premium")]
-    ])
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text='💼 Покупка проектов', callback_data='menu_projects'))
+    builder.row(InlineKeyboardButton(text='⚙️ Компиляция JNI', callback_data='menu_jni'))
+    builder.row(InlineKeyboardButton(text='👤 Кабинет', callback_data='menu_cabinet'))
+    builder.row(InlineKeyboardButton(text='💎 Премиум', callback_data='menu_premium'))
+    return builder.as_markup()
 
-def payment_methods(product_name, price):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 СБП", callback_data=f"pay_sbp_{product_name}_{price}"),
-         InlineKeyboardButton(text="💳 Карта", callback_data=f"pay_card_{product_name}_{price}")],
-        [InlineKeyboardButton(text="✨ Звёзды (Telegram Stars)", callback_data=f"pay_stars_{product_name}_{price}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_buy_projects")]
-    ])
+def projects_menu():
+    builder = InlineKeyboardBuilder()    builder.row(InlineKeyboardButton(text='🎮 Мод Блек Раши-26 года', callback_data='item_mod_26'))
+    builder.row(InlineKeyboardButton(text='🚀 Лаунчер Блек Раши', callback_data='item_launcher'))
+    builder.row(InlineKeyboardButton(text='🔙 Назад', callback_data='main_menu'))
+    return builder.as_markup()
 
-def compilation_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 НДК-25 (50 руб)", callback_data="comp_ndk25")],
-        [InlineKeyboardButton(text="📦 НДК-24 (60 руб)", callback_data="comp_ndk24")],
-        [InlineKeyboardButton(text="📦 НДК-16 (40 руб)", callback_data="comp_ndk16")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
-    ])
+def jni_menu():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text=' НДК-26', callback_data='item_ndk_26'))
+    builder.row(InlineKeyboardButton(text='📦 НДК-24', callback_data='item_ndk_24'))
+    builder.row(InlineKeyboardButton(text=' НДК-16', callback_data='item_ndk_16'))
+    builder.row(InlineKeyboardButton(text='🔙 Назад', callback_data='main_menu'))
+    return builder.as_markup()
+
+def payment_menu(item_code: str, back_callback: str):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text='💳 СБП', callback_data=f'pay_sbp_{item_code}'))
+    builder.row(InlineKeyboardButton(text='🏦 Карта', callback_data=f'pay_card_{item_code}'))
+    builder.row(InlineKeyboardButton(text='⭐ Звёзды', callback_data=f'pay_stars_{item_code}'))
+    builder.row(InlineKeyboardButton(text='🔙 Назад', callback_data=back_callback))
+    return builder.as_markup()
 
 def premium_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏆 Премка понимающий (350⭐)", callback_data="premium_pro")],
-        [InlineKeyboardButton(text="🥈 Премка средний (250⭐)", callback_data="premium_mid")],
-        [InlineKeyboardButton(text="🥉 Премка начинающий (150⭐)", callback_data="premium_start")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
-    ])
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text='👑 Премка понимающий (350⭐)', callback_data='prem_understanding'))
+    builder.row(InlineKeyboardButton(text='🥈 Премка средний (250⭐)', callback_data='prem_medium'))
+    builder.row(InlineKeyboardButton(text='🥉 Премка начинающий (150⭐)', callback_data='prem_beginner'))
+    builder.row(InlineKeyboardButton(text='🔙 Назад', callback_data='main_menu'))
+    return builder.as_markup()
 
-# ========== ОБРАБОТЧИКИ ==========
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in user_stats:
-        user_stats[user_id] = {"purchases": 0, "premium": None}
-    await message.answer(
-        "Привет! 👋 Тут ты можешь купить свой проект за маленькую цену.\n\nВыбери действие:",
-        reply_markup=main_menu()
+def back_to_main():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text='🔙 В главное меню', callback_data='main_menu'))
+    return builder.as_markup()
+
+# Обработчики
+@router.message(CommandStart())
+async def cmd_start(message: Message):
+    await init_db()
+    await get_or_create_user(
+        message.from_user.id,
+        message.from_user.username or 'Без имени',
+        message.from_user.first_name
     )
+    text = f"👋 Привет, {message.from_user.first_name}!\n\nТут ты можешь купить свой проект за маленькую цену."
+    await message.answer(text, reply_markup=main_menu())
 
-@dp.callback_query(lambda c: c.data == "menu_buy_projects")
-async def buy_projects_menu(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "🎮 Выбери проект для покупки:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔫 Мод Блек Раши-26 года (250 руб)", callback_data="product_mod_black_rash")],
-            [InlineKeyboardButton(text="🚀 Лаунчер Блек Раши (150 руб)", callback_data="product_launcher")],
-            [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main")]
-        ])
-    )
-    await callback.answer()
+@router.callback_query(F.data == 'main_menu')
+async def cb_main_menu(call: CallbackQuery):
+    await call.message.edit_text("📌 Главное меню:", reply_markup=main_menu())
+@router.callback_query(F.data == 'menu_projects')
+async def cb_projects(call: CallbackQuery):
+    await call.message.edit_text("🎮 Выберите проект:", reply_markup=projects_menu())
 
-@dp.callback_query(lambda c: c.data == "product_mod_black_rash")
-async def mod_black_rash(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "💎 Мод Блек Раши-26 года\nЦена: 250 руб\n\nВыбери способ оплаты:",
-        reply_markup=payment_methods("Mod_Black_Rash", 250)
-    )
-    await callback.answer()
+@router.callback_query(F.data == 'menu_jni')
+async def cb_jni(call: CallbackQuery):
+    await call.message.edit_text("️ Выберите версию JNI:", reply_markup=jni_menu())
 
-@dp.callback_query(lambda c: c.data == "product_launcher")
-async def launcher(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "🚀 Лаунчер Блек Раши\nЦена: 150 руб\n\nВыбери способ оплаты:",
-        reply_markup=payment_methods("Launcher_Black_Rash", 150)
-    )
-    await callback.answer()
+@router.callback_query(F.data == 'menu_cabinet')
+async def cb_cabinet(call: CallbackQuery):
+    stats = await get_user_stats(call.from_user.id)
+    if stats:
+        username, purchases, current_order, premium = stats
+        text = (
+            f"👤 **Ваш Кабинет**\n\n"
+            f"1. Имя: {username} (ID: {call.from_user.id})\n"
+            f"2. Покупок: {purchases}\n"
+            f"3. Текущий заказ: {current_order}\n"
+            f"4. Премиум: {premium}"
+        )
+        await call.message.edit_text(text, reply_markup=back_to_main(), parse_mode='Markdown')
 
-@dp.callback_query(lambda c: c.data.startswith("pay_"))
-async def handle_payment(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    method = parts[1]
-    product_name = parts[2] + ("_" + parts[3] if len(parts) > 3 else "")
-    price = int(parts[-1])
+@router.callback_query(F.data == 'menu_premium')
+async def cb_premium(call: CallbackQuery):
+    await call.message.edit_text("💎 Выберите уровень премиума:", reply_markup=premium_menu())
+
+@router.callback_query(F.data == 'item_mod_26')
+async def cb_mod_26(call: CallbackQuery):
+    item = ITEMS['mod_26']
+    text = f" {item['name']}\n💰 Цена: {item['price']}₽\n\nВыберите способ оплаты:"
+    await call.message.edit_text(text, reply_markup=payment_menu('mod_26', 'menu_projects'))
+
+@router.callback_query(F.data == 'item_launcher')
+async def cb_launcher(call: CallbackQuery):
+    item = ITEMS['launcher']
+    text = f"🚀 {item['name']}\n💰 Цена: {item['price']}₽\n\nВыберите способ оплаты:"
+    await call.message.edit_text(text, reply_markup=payment_menu('launcher', 'menu_projects'))
+
+@router.callback_query(F.data == 'item_ndk_26')
+async def cb_ndk_26(call: CallbackQuery):
+    item = ITEMS['ndk_26']
+    text = f"📦 {item['name']}\n💰 Цена: {item['price']}₽\n\nВыберите способ оплаты:"
+    await call.message.edit_text(text, reply_markup=payment_menu('ndk_26', 'menu_jni'))
+
+@router.callback_query(F.data == 'item_ndk_24')
+async def cb_ndk_24(call: CallbackQuery):
+    item = ITEMS['ndk_24']
+    text = f"📦 {item['name']}\n💰 Цена: {item['price']}₽\n\nВыберите способ оплаты:"
+    await call.message.edit_text(text, reply_markup=payment_menu('ndk_24', 'menu_jni'))
+@router.callback_query(F.data == 'item_ndk_16')
+async def cb_ndk_16(call: CallbackQuery):
+    item = ITEMS['ndk_16']
+    text = f"📦 {item['name']}\n💰 Цена: {item['price']}₽\n\nВыберите способ оплаты:"
+    await call.message.edit_text(text, reply_markup=payment_menu('ndk_16', 'menu_jni'))
+
+@router.callback_query(F.data.startswith('pay_sbp_'))
+async def cb_pay_sbp(call: CallbackQuery):
+    item_code = call.data.split('_')[-1]
+    item = ITEMS[item_code]
+    await add_purchase(call.from_user.id, item['name'], item['price'], 'СБП')
     
-    user_id = callback.from_user.id
+    text = (
+        f"1. {item['name']} (цена: {item['price']})\n"
+        f"2. Номер телефона: {PHONE}\n"
+        f"3. Банк: {BANK}\n"
+        f"4. Ваш айди: {call.from_user.id}\n"
+        f"5. {WAIT_MSG}"
+    )
+    await call.message.edit_text(text, reply_markup=back_to_main())
+
+@router.callback_query(F.data.startswith('pay_card_'))
+async def cb_pay_card(call: CallbackQuery):
+    item_code = call.data.split('_')[-1]
+    item = ITEMS[item_code]
+    await add_purchase(call.from_user.id, item['name'], item['price'], 'Карта')
     
-    if method == "sbp" or method == "card":
-        text = (f"💸 Оплата через {method.upper()}:\n\n"
-                f"📦 {product_name.replace('_', ' ')}: {price} руб\n"
-                f"📞 Номер телефона: +79800180927\n"
-                f"🏦 Банк: Сбер банк\n"
-                f"🆔 Ваш ID: {user_id}\n\n"
-                f"⏳ Ожидайте 2 часа, с вами свяжутся.\n"
-                f"📌 После оплаты отправьте чек сюда.")
-    else:
-        text = (f"✨ Оплата Звёздами Telegram:\n\n"
-                f"📦 {product_name.replace('_', ' ')}: {price} руб → {price//5} звёзд\n"
-                f"👤 Ади (куда переводить): @Rider_Mare\n\n"
-                f"⭐ После перевода звёзд нажмите «Подтвердить».")
+    text = (
+        f"1. {item['name']} (цена: {item['price']})\n"
+        f"2. Номер телефона: {PHONE}\n"
+        f"3. Банк: {BANK}\n"
+        f"4. Ваш айди: {call.from_user.id}\n"
+        f"5. {WAIT_MSG}"
+    )
+    await call.message.edit_text(text, reply_markup=back_to_main())
+
+@router.callback_query(F.data.startswith('pay_stars_'))
+async def cb_pay_stars(call: CallbackQuery):
+    item_code = call.data.split('_')[-1]
+    item = ITEMS[item_code]
+    await add_purchase(call.from_user.id, item['name'], item['price'], 'Звёзды')
     
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Я оплатил(а)", callback_data=f"confirm_{product_name}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_buy_projects")]
-    ]))
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data.startswith("confirm_"))
-async def confirm_payment(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    user_stats[user_id]["purchases"] += 1
-    await callback.message.edit_text(
-        "✅ Заявка принята!\nСкоро с вами свяжется менеджер (до 2 часов).\nСпасибо за покупку!",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_to_main")]
-        ])
+    text = (
+        f"1. {item['name']} (цена: {item['price']})\n"
+        f"2. Ади: {STARS_ID}"
     )
-    await callback.answer()
+    await call.message.edit_text(text, reply_markup=back_to_main())
 
-@dp.callback_query(lambda c: c.data == "menu_compilation")
-async def compilation(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "⚙️ Выбери версию NDK для компиляции:",
-        reply_markup=compilation_menu()
+@router.callback_query(F.data == 'prem_understanding')
+async def cb_prem_understanding(call: CallbackQuery):    text = (
+        "👑 **Премка понимающий (350⭐)**\n\n"
+        "1. Покупка проектов за раз: 4\n"
+        "2. Меньше времени ждать\n"
+        "3. Лаунчер в подарок "
     )
-    await callback.answer()
+    await call.message.edit_text(text, reply_markup=back_to_main(), parse_mode='Markdown')
 
-@dp.callback_query(lambda c: c.data.startswith("comp_"))
-async def ndk_selected(callback: types.CallbackQuery):
-    ndk_map = {"ndk25": ("НДК-25", 50), "ndk24": ("НДК-24", 60), "ndk16": ("НДК-16", 40)}
-    key = callback.data.split("_")[1]
-    name, price = ndk_map[key]
-    await callback.message.edit_text(
-        f"🛠 {name}\nЦена: {price} руб\n\nСпособы оплаты:",
-        reply_markup=payment_methods(name, price)
+@router.callback_query(F.data == 'prem_medium')
+async def cb_prem_medium(call: CallbackQuery):
+    text = (
+        "🥈 **Премка средний (250⭐)**\n\n"
+        "1. Покупать проекты 3 штуки за раз\n"
+        "2. Чуть меньше даётся время на сборку\n"
+        "3. Даётся любая компиляция лаунчера за малую цену"
     )
-    await callback.answer()
+    await call.message.edit_text(text, reply_markup=back_to_main(), parse_mode='Markdown')
 
-@dp.callback_query(lambda c: c.data == "menu_cabinet")
-async def cabinet(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    stats = user_stats.get(user_id, {"purchases": 0, "premium": None})
-    premium_text = stats["premium"] if stats["premium"] else "Нет"
-    await callback.message.edit_text(
-        f"👤 Ваш кабинет:\n\n"
-        f"🆔 ID: {user_id}\n"
-        f"📦 Куплено проектов: {stats['purchases']} раз\n"
-        f"⭐ Премиум: {premium_text}\n"
-        f"⏳ Ожидание покупки/компиляции: Нет активных",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]
-        ])
+@router.callback_query(F.data == 'prem_beginner')
+async def cb_prem_beginner(call: CallbackQuery):
+    text = (
+        "🥉 **Премка начинающий (150⭐)**\n\n"
+        "1. Покупка проекта 2 раза\n"
+        "2. Консультация у специалистов\n"
+        "3. 1 коррекция лаунчера за 20 звёзд"
     )
-    await callback.answer()
+    await call.message.edit_text(text, reply_markup=back_to_main(), parse_mode='Markdown')
 
-@dp.callback_query(lambda c: c.data == "menu_premium")
-async def premium(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "🌟 Выбери уровень премиум:\n\n"
-        "🏆 Понимающий — 350⭐\n🥈 Средний — 250⭐\n🥉 Начинающий — 150⭐",
-        reply_markup=premium_menu()
-    )
-    await callback.answer()
+# Webhook для Render
+async def on_startup(app):
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
 
-@dp.callback_query(lambda c: c.data.startswith("premium_"))
-async def premium_info(callback: types.CallbackQuery):
-    info = {
-        "pro": ("🏆 Премка понимающий (350⭐)", 
-                "• Покупка проектов за раз: 4\n• Меньше времени ждать\n• Лаунчер в подарок 🎁"),
-        "mid": ("🥈 Премка средний (250⭐)", 
-                "• Покупка проектов 3 штуки за раз\n• Чуть меньше времени на сборку\n• Любая компиляция лаунчера за малую цену"),
-        "start": ("🥉 Премка начинающий (150⭐)", 
-                  "• Покупка проекта 2 раза\n• Консультация у специалистов\n• 1 корреляция лаунчера за 20 звёзд")
-    }
-    level = callback.data.split("_")[1]
-    name, benefits = info[level]
-    await callback.message.edit_text(
-        f"{name}\n\nДаёт:\n{benefits}\n\nОплата: переводом звёзд @Rider_Mare",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Купить премиум", callback_data=f"buy_premium_{level}")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_premium")]
-        ])
-    )
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data.startswith("buy_premium_"))
-async def buy_premium(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "✨ Отправь скриншот оплаты звёздами на @Rider_Mare\nИ напиши сюда «Готово».",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_to_main")]
-        ])
-    )
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "back_to_main")
-async def back_to_main(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "Главное меню:",
-        reply_markup=main_menu()
-    )
-    await callback.answer()
-
-# ========== НАСТРОЙКА ВЕБХУКОВ ==========
-async def on_startup(bot: Bot):
-    global WEBHOOK_URL
-    WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}{WEBHOOK_PATH}"
-    await bot.set_webhook(WEBHOOK_URL)
-
-async def on_shutdown(bot: Bot):
+async def on_shutdown(app):
     await bot.delete_webhook()
 
-def main():
-    # Настройка веб-приложения
-    app = web.Application()
-    
-    # Настройка вебхука
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-    
-    # Настройка on_startup/on_shutdown
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-    
-    setup_application(app, dp, bot=bot)
-    
-    # Запуск сервера
-    web.run_app(app, host="0.0.0.0", port=PORT)
+app = web.Application()
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
-if __name__ == "__main__":
-    main()
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
+setup_application(app, dp, bot=bot)
+
+if __name__ == '__main__':
+    web.run_app(app, host='0.0.0.0', port=PORT)
