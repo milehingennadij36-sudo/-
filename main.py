@@ -97,9 +97,10 @@ async def launcher(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("pay_"))
 async def handle_payment(callback: types.CallbackQuery):    parts = callback.data.split("_")
-    method = parts[1]
-    product_name = parts[2] + ("_" + parts[3] if len(parts) > 3 else "")
-    price = int(parts[-1])
+    parts = callback.data.split('_')  # разбиваем данные
+method = parts[1]                  # метод оплаты
+product_name = parts[2]            # или parts[2] + "_" + parts[3]
+price = int(parts[-1])             # цена (последний элемент)
     
     user_id = callback.from_user.id
     
