@@ -14,7 +14,7 @@ load_dotenv()
 # Настройки
 BOT_TOKEN = os.getenv('8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY')
 PORT = int(os.getenv('PORT', 8080))
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+WEBHOOK_URL = os.getenv('https://pokupai-proekt-u-nas.onrender.com', '')
 
 # Реквизиты
 PHONE = '+79800180927'
