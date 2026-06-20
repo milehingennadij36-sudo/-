@@ -216,7 +216,7 @@ async def prem_info(call: types.CallbackQuery):
 async def handle_root(request):
     """Эндпоинт для Крона и Render Web Service"""
     return web.Response(text="Бот активен и работает!", status=200)
-    async def main():
+async def main():
     # Настройка aiohttp приложения
     app = web.Application()
     app.router.add_get('/', handle_root)
