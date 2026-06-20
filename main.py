@@ -11,7 +11,7 @@ from aiohttp import web
 logging.basicConfig(level=logging.INFO)
 
 # Конфигурация из переменных окружения (для Render)
-TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН_БОТА")
+TOKEN = os.getenv("8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY", "8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY")
 PORT = int(os.getenv("PORT", 8080))
 
 # Инициализация бота и диспетчера
