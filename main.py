@@ -11,7 +11,7 @@ from aiohttp import web
 logging.basicConfig(level=logging.INFO)
 
 # Конфигурация из переменных окружения (для Render)
-TOKEN = os.getenv("8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY", "8668731322:AAGqKqZYcC19wqpk8LA6s6_1TxxmPvJPICY")
+TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН_БОТА")
 PORT = int(os.getenv("PORT", 8080))
 
 # Инициализация бота и диспетчера
@@ -100,8 +100,7 @@ async def jni_menu(call: types.CallbackQuery):
 # Обработка выбора конкретного товара/услуги -> вывод способов оплаты
 @dp.callback_query(F.data.startswith("item:"))
 async def choose_pay_method(call: types.CallbackQuery):
-    _, item_id, price = call.data.split(":")
-    names = {
+    _, item_id, price = call.data.split(":")names = {
         "br26": "Мод Блек Раши-26 года",
         "ndk25": "НДК-25",
         "ndk24": "НДК-24",
@@ -215,8 +214,7 @@ async def prem_info(call: types.CallbackQuery):
 
 async def handle_root(request):
     """Эндпоинт для Крона и Render Web Service"""
-    return web.Response(text="Бот активен и работает!", status=200)
-async def main():
+    return web.Response(text="Бот активен и работает!", status=200)async def main():
     # Настройка aiohttp приложения
     app = web.Application()
     app.router.add_get('/', handle_root)
